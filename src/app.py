@@ -91,27 +91,23 @@ class WhisperMinutesApp(ctk.CTk):
             self.docs_path_label.configure(text=file_path, text_color="white")
 
     def update_progress(self, value, message):
-        self.progress_bar.set(value)
-        self.progress_label.configure(text=message)
-        self.update_idletasks()
+        def _apply():
+            self.progress_bar.set(value)
+            self.progress_label.configure(text=message)
+        self.after(0, _apply)
 
     def start_process(self):
         # 多重実行防止と画面クリア
         self.run_btn.configure(state="disabled")
-        self.result_box.delete("0.0", "end")
-        
+        self.result_box.delete("0.0", "end")        
         thread = threading.Thread(target=self.run_task, daemon=True)
         thread.start()
 
     def run_task(self):
         try:
-            # 文字起こし実行
             text = self._transcriber.run(self.selected_audio_path, self.update_progress)
-            
-            # 結果をテキストエリアに表示
-            self.result_box.insert("0.0", text)
-            
+            self.after(0, lambda: self.result_box.insert("0.0", text))
         except Exception as e:
             self.update_progress(0, f"エラーが発生してしまいました：{e}")
         finally:
-            self.run_btn.configure(state="normal")
+            self.after(0, lambda: self.run_btn.configure(state="normal"))
