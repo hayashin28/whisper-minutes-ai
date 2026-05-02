@@ -1,34 +1,30 @@
 from __future__ import annotations
 
+from faster_whisper import WhisperModel
+
 from app.domain.models.media_file import MediaFile
 from app.domain.models.transcript_settings import TranscriptSettings
-from app.domain.models.transcription_result import TranscriptionResult
+from app.domain.models.transcription_result import TranscriptSegment, TranscriptionResult
 
 
 class TranscriptionService:
     """
-    文字起こしサービスの空骨格です。
+    faster-whisper を用いた文字起こしサービスです。
 
-    なぜ:
-        CreateTranscriptJobUseCase から見て、
-        TRANSCRIBING フェーズの責務境界を先に立てるためです。
-
-    前提:
-        まだ faster-whisper などの具体実装は未接続です。
-        現段階では、呼び出しても落ちず、
-        TranscriptionResult を返せることを優先します。
-
-    入出力:
-        主入力メディアと設定を受け取り、
-        生の文字起こし結果DTOを返します。
-
-    副作用:
-        ありません。
-
-    例外:
-        基本的に投げません。
-        未実装部分は段階的に埋めます。
+    この段階では、UI 起動を妨げないように
+    モデルは遅延初期化します。
     """
+
+    def __init__(
+        self,
+        model_size: str = "small",
+        device: str = "cpu",
+        compute_type: str = "int8",
+    ) -> None:
+        self._model_size = model_size
+        self._device = device
+        self._compute_type = compute_type
+        self._model: WhisperModel | None = None
 
     def transcribe(
         self,
@@ -36,16 +32,63 @@ class TranscriptionService:
         settings: TranscriptSettings,
     ) -> TranscriptionResult:
         """
-        文字起こしを実行します。
-
-        現段階ではダミー結果を返します。
-        後で faster-whisper 等へ差し替える前提です。
+        主入力メディアを文字起こしします。
         """
-        dummy_text = f"[DUMMY] {media_file.file_name} の文字起こし結果です。"
+        model = self._get_model()
 
-        return TranscriptionResult.from_text(
-            full_text=dummy_text,
+        segments, info = model.transcribe(
+            media_file.path,
+            language=settings.language,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            word_timestamps=True,
+        )
+
+        realized_segments = list(segments)
+
+        transcript_segments: list[TranscriptSegment] = []
+        full_text_parts: list[str] = []
+
+        for seg in realized_segments:
+            text = seg.text.strip()
+            if not text:
+                continue
+
+            transcript_segments.append(
+                TranscriptSegment(
+                    start_sec=float(seg.start),
+                    end_sec=float(seg.end),
+                    text=text,
+                    speaker_label=None,
+                )
+            )
+            full_text_parts.append(text)
+
+        full_text = "\n".join(full_text_parts).strip()
+
+        if not full_text:
+            return TranscriptionResult.empty(language=settings.language)
+
+        raw_metadata = {
+            "detected_language": getattr(info, "language", settings.language),
+            "language_probability": str(getattr(info, "language_probability", "")),
+        }
+
+        return TranscriptionResult(
+            full_text=full_text,
+            segments=transcript_segments,
             language=settings.language,
             duration_sec=None,
-            warnings=["dummy_transcription_result"],
+            raw_metadata=raw_metadata,
+            warnings=[],
         )
+
+    def _get_model(self) -> WhisperModel:
+        if self._model is None:
+            self._model = WhisperModel(
+                self._model_size,
+                device=self._device,
+                compute_type=self._compute_type,
+            )
+        return self._model
